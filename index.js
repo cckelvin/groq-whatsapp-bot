@@ -5,38 +5,41 @@ const express = require('express');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-let pairingCode = null;
+const PORT = process.env.PORT || 10000;
+let sock = null;
+let currentCode = null;
 
 app.get('/', (req, res) => {
-  if (!pairingCode) {
-    return res.send(`
-      <html>
-        <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;">
-          <h2>Bot is connected or generating code... Refresh in a few seconds.</h2>
-        </body>
-      </html>
-    `);
-  }
-
   res.send(`
     <html>
       <head><title>Link WhatsApp</title></head>
       <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
-        <h1>Your Pairing Code</h1>
-        <div style="font-size: 40px; font-weight: bold; letter-spacing: 5px; background: #eee; padding: 15px 25px; border-radius: 8px;">
-          ${pairingCode}
-        </div>
-        <ol style="margin-top: 20px; text-align: left;">
-          <li>Open WhatsApp on this tablet.</li>
-          <li>Tap <b>Settings</b> (or 3 dots) > <b>Linked Devices</b>.</li>
-          <li>Tap <b>Link a Device</b>.</li>
-          <li>Tap <b>Link with phone number instead</b> at the bottom.</li>
-          <li>Type the code shown above.</li>
-        </ol>
+        <h1>WhatsApp Pairing Service</h1>
+        ${
+          currentCode
+            ? `<div style="font-size: 36px; font-weight: bold; background: #f0f0f0; padding: 15px 25px; border-radius: 8px;">${currentCode}</div>`
+            : `<a href="/pair" style="font-size:20px;padding:12px 24px;background:#075e54;color:white;text-decoration:none;border-radius:6px;">Get New Pairing Code</a>`
+        }
+        <p style="margin-top:20px;">Open WhatsApp > Linked Devices > Link a Device > Link with phone number instead.</p>
       </body>
     </html>
   `);
+});
+
+app.get('/pair', async (req, res) => {
+  if (!sock) {
+    return res.send('WhatsApp socket not initialized yet. Wait a few seconds and refresh.');
+  }
+  try {
+    // Wait 3 seconds to ensure connection stability before requesting
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const code = await sock.requestPairingCode('2349159759552');
+    currentCode = code;
+    res.redirect('/');
+  } catch (err) {
+    console.error('Failed to request pairing code:', err);
+    res.send('Error generating code. Please go back and try again in 10 seconds.');
+  }
 });
 
 app.listen(PORT, () => {
@@ -46,36 +49,28 @@ app.listen(PORT, () => {
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false
+    printQRInTerminal: false,
+    browser: ['Ubuntu', 'Chrome', '20.0.04']
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    // Trigger pairing code if not registered
-    if (qr && !sock.authState.creds.registered) {
-      try {
-        // Formatted with country code for Nigeria (234) without '+'
-        const code = await sock.requestPairingCode('2349159759552');
-        pairingCode = code;
-        console.log('Pairing Code:', code);
-      } catch (err) {
-        console.error('Error requesting pairing code:', err);
-      }
-    }
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect } = update;
 
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut);
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      console.log('Connection closed. Reconnecting:', shouldReconnect);
+      currentCode = null;
       if (shouldReconnect) {
-        connectToWhatsApp();
+        setTimeout(connectToWhatsApp, 5000);
       }
     } else if (connection === 'open') {
       console.log('WhatsApp Bot connected successfully!');
-      pairingCode = null;
+      currentCode = null;
     }
   });
 
@@ -102,11 +97,10 @@ async function connectToWhatsApp() {
         const replyText = chatCompletion.choices[0]?.message?.content || "Sorry, I couldn't process that.";
         await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
       } catch (error) {
-        console.error('Error processing message:', error);
+        console.error('Error handling message:', error);
       }
     }
   });
 }
 
 connectToWhatsApp();
-          
