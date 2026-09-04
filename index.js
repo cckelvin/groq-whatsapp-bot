@@ -90,7 +90,7 @@ async function connectToWhatsApp() {
         // Fetch AI Response from Groq
         const chatCompletion = await groq.chat.completions.create({
           messages: [{ role: 'user', content: userMessage }],
-          model: 'llama-3.3-70b-versatile',
+          model: 'openai/gpt-oss-120b',
         });
 
         const replyText = chatCompletion.choices[0]?.message?.content || "Sorry, I couldn't process that.";
