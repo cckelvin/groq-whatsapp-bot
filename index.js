@@ -1,6 +1,7 @@
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const Groq = require('groq-sdk');
 const express = require('express');
+const fs = require('fs');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -12,15 +13,19 @@ let currentCode = null;
 app.get('/', (req, res) => {
   res.send(`
     <html>
-      <head><title>Link WhatsApp</title></head>
-      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
+      <head>
+        <title>Link WhatsApp</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;text-align:center;padding:20px;">
         <h1>WhatsApp Pairing Service</h1>
         ${
           currentCode
-            ? `<div style="font-size: 36px; font-weight: bold; background: #f0f0f0; padding: 15px 25px; border-radius: 8px;">${currentCode}</div>`
-            : `<a href="/pair" style="font-size:20px;padding:12px 24px;background:#075e54;color:white;text-decoration:none;border-radius:6px;">Get New Pairing Code</a>`
+            ? `<div style="font-size: 32px; font-weight: bold; background: #e0f2fe; color: #0369a1; padding: 15px 25px; border-radius: 8px; letter-spacing: 4px; user-select: all;">${currentCode}</div>
+               <p style="color:#d97706;font-weight:bold;">Enter this code into WhatsApp quickly before it expires!</p>`
+            : `<a href="/pair" style="font-size:20px;padding:14px 28px;background:#075e54;color:white;text-decoration:none;border-radius:8px;font-weight:bold;">Generate Pairing Code</a>`
         }
-        <p style="margin-top:20px;">Open WhatsApp > Linked Devices > Link a Device > Link with phone number instead.</p>
+        <p style="margin-top:25px;color:#555;">Open WhatsApp > Linked Devices > Link a Device > Link with phone number instead.</p>
       </body>
     </html>
   `);
@@ -28,23 +33,20 @@ app.get('/', (req, res) => {
 
 app.get('/pair', async (req, res) => {
   if (!sock) {
-    return res.send('WhatsApp socket not initialized yet. Wait a few seconds and refresh.');
+    return res.send('WhatsApp bot initializing... Please go back and refresh in 5 seconds.');
   }
   try {
-    // Wait 3 seconds to ensure connection stability before requesting
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Generate fresh code for Nigeria number (+234)
     const code = await sock.requestPairingCode('2349159759552');
     currentCode = code;
     res.redirect('/');
   } catch (err) {
-    console.error('Failed to request pairing code:', err);
-    res.send('Error generating code. Please go back and try again in 10 seconds.');
+    console.error('Pairing error:', err);
+    res.send('Error generating code. Please go back, wait 5 seconds, and try again.');
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Web server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server live on port ${PORT}`));
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -52,24 +54,32 @@ async function connectToWhatsApp() {
   sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    browser: ['Ubuntu', 'Chrome', '20.0.04']
+    browser: ['Ubuntu', 'Chrome', '20.0.04'],
+    connectTimeoutMs: 60000,
+    keepAliveIntervalMs: 25000
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('Connection closed. Reconnecting:', shouldReconnect);
+      console.log('Connection closed. Status code:', statusCode);
       currentCode = null;
-      if (shouldReconnect) {
-        setTimeout(connectToWhatsApp, 5000);
+
+      // If pairing failed or logged out, wipe saved session folder to start clean
+      if (statusCode === DisconnectReason.loggedOut || statusCode === 400) {
+        console.log('Clearing corrupt auth state...');
+        if (fs.existsSync('auth_info_baileys')) {
+          fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+        }
       }
+      
+      setTimeout(connectToWhatsApp, 5000);
     } else if (connection === 'open') {
-      console.log('WhatsApp Bot connected successfully!');
+      console.log('WhatsApp Bot successfully connected!');
       currentCode = null;
     }
   });
@@ -97,10 +107,11 @@ async function connectToWhatsApp() {
         const replyText = chatCompletion.choices[0]?.message?.content || "Sorry, I couldn't process that.";
         await sock.sendMessage(senderJid, { text: replyText }, { quoted: msg });
       } catch (error) {
-        console.error('Error handling message:', error);
+        console.error('Error answering message:', error);
       }
     }
   });
 }
 
 connectToWhatsApp();
+  
